@@ -1,4 +1,4 @@
-# Paprika MCP Server
+# Paprika MCP Python Server
 
 A Model Context Protocol (MCP) server that integrates Paprika Recipe Manager with Claude Desktop, enabling natural language recipe management through AI conversation.
 
