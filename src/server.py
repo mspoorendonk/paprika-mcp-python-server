@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Initialize server
-server = Server("paprika-mcp")
+server = Server("paprika-mcp-python")
 
 
 async def main():
@@ -323,7 +323,7 @@ async def main():
                 read_stream,
                 write_stream,
                 InitializationOptions(
-                    server_name="paprika-mcp",
+                    server_name="paprika-mcp-python",
                     server_version="1.0.0",
                     capabilities=server.get_capabilities(
                         notification_options=NotificationOptions(),
