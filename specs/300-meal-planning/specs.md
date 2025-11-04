@@ -91,7 +91,7 @@ Tool response>
 Enhance the list_recipes by adding a `last_planned` attribute to the returned info. It is the date on which the recipe was last planned. This can be used by the LLM in mealplanning such that recently planned recipes are not repeated too often.
 
 Pseudocode for calculating last_planned for each recipe:
-- fetch all planned meals
+- fetch all planned meals in the last 366 days
 - for each recipe:
     - loop over all planned meals
         - if the meal matches the current recipe

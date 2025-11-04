@@ -373,6 +373,8 @@ async def main():
                             if recipe.get("cook_time"):
                                 times.append(f"Cook: {recipe['cook_time']}")
                             recipe_text += f"  Time: {', '.join(times)}\n"
+                        if recipe.get("last_planned"):
+                            recipe_text += f"  Last planned: {recipe['last_planned']}\n"
                         if recipe.get("ingredients"):
                             ingredients_lines = recipe["ingredients"].split("\n")
                             ingredients_preview = "\n    ".join(ingredients_lines)

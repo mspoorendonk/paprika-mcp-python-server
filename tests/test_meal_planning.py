@@ -153,6 +153,71 @@ class TestMealPlanningAPI:
             assert result == []
 
     @pytest.mark.asyncio
+    async def test_get_meal_plan_with_start_end_date(self, client):
+        """Test getting meal plan with explicit start and end dates."""
+        mock_response = {
+            "result": [
+                {
+                    "recipe_uid": "123",
+                    "recipe_name": "Pasta Bolognese",
+                    "date": "2025-10-15",
+                    "type": "dinner",
+                },
+                {
+                    "recipe_uid": "456",
+                    "recipe_name": "Pizza",
+                    "date": "2025-10-20",
+                    "type": "dinner",
+                },
+            ]
+        }
+
+        with patch.object(
+            client, "_make_v1_basic_auth_request", new_callable=AsyncMock
+        ) as mock_request:
+            mock_request.return_value = mock_response
+
+            result = await client.get_meal_plan(
+                start_date="2025-10-15",
+                end_date="2025-10-25",
+                meal_type="dinner"
+            )
+
+            assert len(result) == 2
+            assert result[0]["meal"] == "Pasta Bolognese"
+            assert result[1]["meal"] == "Pizza"
+
+    @pytest.mark.asyncio
+    async def test_get_meal_plan_historical(self, client):
+        """Test getting historical meal plan (past dates)."""
+        mock_response = {
+            "result": [
+                {
+                    "recipe_uid": "123",
+                    "recipe_name": "Pasta Bolognese",
+                    "date": "2024-11-15",
+                    "type": "dinner",
+                },
+            ]
+        }
+
+        with patch.object(
+            client, "_make_v1_basic_auth_request", new_callable=AsyncMock
+        ) as mock_request:
+            mock_request.return_value = mock_response
+
+            # Get meal plan from past
+            result = await client.get_meal_plan(
+                start_date="2024-11-01",
+                end_date="2024-11-30",
+                meal_type="dinner"
+            )
+
+            assert len(result) == 1
+            assert result[0]["meal"] == "Pasta Bolognese"
+            assert result[0]["date"] == "2024-11-15"
+
+    @pytest.mark.asyncio
     async def test_add_meal_to_plan_with_meal_name(self, client):
         """Test adding meal to plan using meal name."""
         # Mock list_recipes

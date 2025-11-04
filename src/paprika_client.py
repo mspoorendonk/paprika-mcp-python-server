@@ -498,17 +498,59 @@ class PaprikaClient:
     async def list_recipes(self, limit: int = 50) -> List[Dict[str, Any]]:
         """
         List recipes from Paprika.
+        Enhanced with last_planned date from meal plan.
 
         Args:
             limit: Maximum number of recipes to return
 
         Returns:
-            List of recipe data
+            List of recipe data, each with optional last_planned date (YYYY-MM-DD format)
 
         Raises:
             PaprikaAPIError: If listing fails
         """
         try:
+            # Fetch all planned meals to calculate last_planned dates
+            # Get all historical meal plan entries (past dates, not future)
+            # For last_planned, we need all past entries, so use a large historical range
+            meal_plan = []
+            try:
+                today = datetime.now().date()
+                # Get meal plan from 1 year ago until today for last_planned calculation
+                # This ensures we capture all historical entries
+                start_date = (today - timedelta(days=366)).strftime("%Y-%m-%d")
+                end_date = today.strftime("%Y-%m-%d")
+                meal_plan = await self.get_meal_plan(
+                    start_date=start_date,
+                    end_date=end_date,
+                    meal_type=None
+                )
+            except Exception as e:
+                logger.warning(f"Failed to fetch meal plan for last_planned calculation: {str(e)}")
+                # Continue without last_planned dates if meal plan fetch fails
+
+            # Build a map of recipe UID to most recent planned date
+            recipe_last_planned = {}
+            for meal_entry in meal_plan:
+                meal_id = meal_entry.get("meal_ID", "")
+                meal_date = meal_entry.get("date", "")
+                if meal_id and meal_date:
+                    # Parse date (format: "YYYY-MM-DD")
+                    try:
+                        # If meal_date has time component, strip it
+                        date_str = meal_date.split()[0] if " " in meal_date else meal_date
+                        date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
+                        
+                        # Keep the most recent date for each recipe
+                        if meal_id not in recipe_last_planned:
+                            recipe_last_planned[meal_id] = date_obj
+                        else:
+                            if date_obj > recipe_last_planned[meal_id]:
+                                recipe_last_planned[meal_id] = date_obj
+                    except (ValueError, AttributeError):
+                        logger.warning(f"Failed to parse date '{meal_date}' for meal_ID '{meal_id}'")
+                        continue
+
             # First get the list of recipe UIDs
             response = await self._make_authenticated_request("GET", "/sync/recipes")
             recipe_list = response.get("result", [])
@@ -534,6 +576,10 @@ class PaprikaClient:
                     # Skip recipes in trash
                     if recipe_data.get("in_trash", False):
                         continue
+
+                    # Add last_planned date if available
+                    if uid in recipe_last_planned:
+                        recipe_data["last_planned"] = recipe_last_planned[uid].strftime("%Y-%m-%d")
 
                     recipes.append(recipe_data)
 
@@ -719,20 +765,27 @@ class PaprikaClient:
     # Meal planning API methods
 
     async def get_meal_plan(
-        self, num_days: int = 10, meal_type: Optional[str] = "dinner"
+        self,
+        num_days: Optional[int] = None,
+        meal_type: Optional[str] = "dinner",
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Get meal plan entries from Paprika.
 
         Args:
-            num_days: Number of days to include (default: 10)
+            num_days: Number of days to include from today forward (default: 10, ignored if start_date/end_date provided)
             meal_type: Filter by meal type (default: "dinner", None for all types)
+            start_date: Start date in YYYY-MM-DD format (optional, if provided overrides num_days)
+            end_date: End date in YYYY-MM-DD format (optional, if provided overrides num_days)
 
         Returns:
             List of meal plan entries, each with: meal (name), meal_ID (recipe UUID), date, type
 
         Raises:
             PaprikaAPIError: If API request fails
+            ValueError: If date parsing fails
         """
         try:
             # Fetch meal plan from API
@@ -758,9 +811,35 @@ class PaprikaClient:
             if not all_entries:
                 return []
 
-            # Filter by date range (from today, num_days ahead)
+            # Determine date range for filtering
             today = datetime.now().date()
-            end_date = today + timedelta(days=num_days)
+            
+            if start_date and end_date:
+                # Use explicit start and end dates
+                try:
+                    start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
+                    end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
+                except ValueError as e:
+                    raise ValueError(f"Invalid date format. Expected YYYY-MM-DD: {str(e)}")
+            elif start_date:
+                # Only start_date provided, use today as end_date or parse end_date
+                try:
+                    start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
+                    end_date_obj = today + timedelta(days=num_days if num_days is not None else 10)
+                except ValueError as e:
+                    raise ValueError(f"Invalid start_date format. Expected YYYY-MM-DD: {str(e)}")
+            elif end_date:
+                # Only end_date provided, use today as start_date
+                try:
+                    start_date_obj = today
+                    end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
+                except ValueError as e:
+                    raise ValueError(f"Invalid end_date format. Expected YYYY-MM-DD: {str(e)}")
+            else:
+                # Use num_days (default behavior, backwards compatible)
+                num_days_val = num_days if num_days is not None else 10
+                start_date_obj = today
+                end_date_obj = today + timedelta(days=num_days_val)
 
             # Map meal type integers to strings for filtering
             meal_type_map = {
@@ -785,7 +864,7 @@ class PaprikaClient:
                         entry_date = datetime.strptime(entry_date_str, "%Y-%m-%d").date()
                         date_str_for_result = entry_date_str
 
-                    if today <= entry_date <= end_date:
+                    if start_date_obj <= entry_date <= end_date_obj:
                         # Get meal type - can be integer or string
                         entry_type = entry.get("type")
                         entry_type_str = None
