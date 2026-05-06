@@ -515,7 +515,8 @@ async def main():
             await paprika_client.close()
 
 
-if __name__ == "__main__":
+def run_server():
+    """Synchronous entry point for the console script."""
     result = None
     try:
         result = asyncio.run(main())
@@ -526,3 +527,6 @@ if __name__ == "__main__":
         import uvicorn
         app, host, port = result
         uvicorn.run(app, host=host, port=port)
+
+if __name__ == "__main__":
+    run_server()

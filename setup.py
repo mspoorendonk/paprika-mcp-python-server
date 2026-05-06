@@ -34,7 +34,7 @@ setup(
     install_requires=requirements,
     entry_points={
         "console_scripts": [
-            "paprika-mcp-python-server=src.server:main",
+            "paprika-mcp-python-server=src.server:run_server",
         ],
     },
 )

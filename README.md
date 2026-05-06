@@ -6,7 +6,10 @@ Supported agents:
 - Claude desktop
 - Home Assistant
 - Google Antigravity
+- Gemini CLI
 - VSCode github copilot
+- Claude.ai (web)
+- Gemini (web)
 
 ## Features
 
@@ -273,3 +276,51 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ---
 
 **Note**: This is an unofficial integration and is not affiliated with or endorsed by Paprika Recipe Manager or Anthropic.
+### Configure VSCode GitHub Copilot
+
+Add the MCP server to your VS Code settings (`settings.json`):
+
+```json
+{
+  "github.copilot.chat.mcpServers": {
+    "paprika-local": {
+      "command": "/path/to/paprika-mcp-python-server/.venv/bin/paprika-mcp-python-server"
+    },
+    "paprika-remote": {
+      "url": "https://mcp.spoorendonk.com/paprika/mcp/sse/"
+    }
+  }
+}
+```
+
+### Configure Google Antigravity
+
+For Google Antigravity, you can use the built-in MCP connection configuration to point to the SSE URL:
+
+```json
+{
+  "mcpServers": {
+    "paprika": {
+      "url": "https://mcp.spoorendonk.com/paprika/mcp/sse/"
+    }
+  }
+}
+```
+
+### Configure Gemini CLI
+
+If using Gemini CLI or similar tools that support standard MCP JSON configurations:
+
+```json
+{
+  "mcpServers": {
+    "paprika": {
+      "command": "/path/to/paprika-mcp-python-server/.venv/bin/paprika-mcp-python-server"
+    }
+  }
+}
+```
+
+### Web Clients (Claude.ai & Gemini Web)
+
+For cloud / web clients to interact with your local Paprika deployment, they must be given your public HTTPS URL (`https://mcp.spoorendonk.com/paprika/mcp/sse/`) and your credentials (e.g., via Basic Auth) according to their respective custom prompt/tool extension workflows.
