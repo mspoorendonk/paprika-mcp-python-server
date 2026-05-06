@@ -1,3 +1,8 @@
+@README.md
+@specs.md
+
+- credentials are in .env 
+- MCP is a new concept and is under heavy development, don't assume that you know things about it but look them up as they could have changed since your knowledge cutoff.
 - use uv for virtual environment .venv
 - write any temporary scripts that you use during development in <projectroot>/tmp/
 - use pytest framework and put tests in the <projectroot>/tests folder

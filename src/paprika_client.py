@@ -540,9 +540,17 @@ class PaprikaClient:
             
         return self._generate_uuid().lower()
 
-    async def get_groceries(self) -> List[Dict[str, Any]]:
+    async def get_groceries(
+        self, include_purchased: bool = False
+    ) -> List[Dict[str, Any]]:
         """
-        Fetch all groceries from Paprika.
+        Fetch groceries from Paprika.
+
+        Args:
+            include_purchased: If False (default), filter out items already
+                marked as purchased. The Paprika grocery list can accumulate
+                hundreds of checked-off items, which are rarely useful to a
+                caller asking "what's on my list".
 
         Returns:
             List of grocery items
@@ -553,7 +561,13 @@ class PaprikaClient:
         try:
             response = await self._make_authenticated_request("GET", "/sync/groceries")
             groceries = response.get("result", [])
-            logger.info(f"Successfully fetched {len(groceries)} groceries")
+            total = len(groceries)
+            if not include_purchased:
+                groceries = [g for g in groceries if not g.get("purchased")]
+            logger.info(
+                f"Successfully fetched {len(groceries)} groceries "
+                f"(filtered from {total}, include_purchased={include_purchased})"
+            )
             return groceries
         except Exception as e:
             logger.error(f"Failed to list groceries: {str(e)}")
@@ -627,8 +641,10 @@ class PaprikaClient:
         """
         # To ensure we only send deleted=True and the original item data, we need to fetch it first
         try:
-            groceries = await self.get_groceries()
-            
+            # Search the full list including already-purchased items, since
+            # callers may legitimately want to remove a checked item too.
+            groceries = await self.get_groceries(include_purchased=True)
+
             # If list provided, filter groceries; else only look in the default list
             target_list_uid = await self._resolve_list_uid(list_name_or_id)
             if target_list_uid:

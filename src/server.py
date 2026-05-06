@@ -209,10 +209,25 @@ async def main():
                 ),
                 Tool(
                     name="get_groceries",
-                    description="List all grocery items currently on the Paprika grocery list",
+                    description=(
+                        "List grocery items currently on the Paprika grocery "
+                        "list. By default, only unchecked (not yet purchased) "
+                        "items are returned, since the list typically "
+                        "accumulates hundreds of checked-off items over time."
+                    ),
                     inputSchema={
                         "type": "object",
-                        "properties": {},
+                        "properties": {
+                            "include_purchased": {
+                                "type": "boolean",
+                                "description": (
+                                    "Set to true to also include items that "
+                                    "have already been checked off as "
+                                    "purchased. Defaults to false."
+                                ),
+                                "default": False,
+                            }
+                        },
                     },
                 ),
                 Tool(
@@ -374,17 +389,25 @@ async def main():
                     return [TextContent(type="text", text=recipe_text)]
 
                 elif name == "get_groceries":
-                    groceries = await paprika_client.get_groceries()
+                    include_purchased = bool(arguments.get("include_purchased", False))
+                    groceries = await paprika_client.get_groceries(
+                        include_purchased=include_purchased
+                    )
 
                     if not groceries:
-                        return [
-                            TextContent(
-                                type="text",
-                                text="No groceries found in your Paprika account.",
-                            )
-                        ]
+                        msg = (
+                            "No groceries found in your Paprika account."
+                            if include_purchased
+                            else "No unchecked groceries on your Paprika list."
+                        )
+                        return [TextContent(type="text", text=msg)]
 
-                    grocery_text = f"Found {len(groceries)} groceries:\n\n"
+                    header = (
+                        f"Found {len(groceries)} groceries"
+                        if include_purchased
+                        else f"Found {len(groceries)} unchecked groceries"
+                    )
+                    grocery_text = f"{header}:\n\n"
                     for item in groceries:
                         purchased_mark = "[x]" if item.get("purchased") else "[ ]"
                         grocery_text += f"{purchased_mark} **{item.get('name', 'Unknown')}**\n"
@@ -435,36 +458,66 @@ async def main():
                     TextContent(type="text", text=f"Error executing {name}: {str(e)}")
                 ]
 
-        # Parse SSE arguments safely
+        # Parse HTTP arguments safely
+        import os
         import sys
-        use_sse = "--sse" in sys.argv
+        use_http = "--http" in sys.argv or "--sse" in sys.argv
         host = "0.0.0.0"
         port = 8000
-        
+        # Optional public URL prefix for clients reaching us through a reverse
+        # proxy that strips a path prefix (e.g. nginx forwarding /paprika/* ->
+        # /*). The SSE transport announces an absolute path for its message
+        # back-channel, so it must include the public prefix.
+        base_path = os.environ.get("MCP_BASE_PATH", "")
+
         for i, arg in enumerate(sys.argv):
             if arg == "--host" and i + 1 < len(sys.argv):
-                host = sys.argv[i+1]
+                host = sys.argv[i + 1]
             elif arg == "--port" and i + 1 < len(sys.argv):
                 try:
-                    port = int(sys.argv[i+1])
+                    port = int(sys.argv[i + 1])
                 except ValueError:
                     pass
+            elif arg == "--base-path" and i + 1 < len(sys.argv):
+                base_path = sys.argv[i + 1]
 
-        if use_sse:
+        if base_path and not base_path.startswith("/"):
+            base_path = "/" + base_path
+        base_path = base_path.rstrip("/")
+
+        if use_http:
+            import contextlib
+
             from mcp.server.sse import SseServerTransport
+            from mcp.server.streamable_http_manager import (
+                StreamableHTTPSessionManager,
+            )
             from starlette.applications import Starlette
             from starlette.routing import Mount
-            import uvicorn
+            from starlette.types import Receive, Scope, Send
 
             mcp_server = server
-            sse = SseServerTransport("/mcp/messages")
-            
-            async def handle_sse(scope, receive, send):
-                async with sse.connect_sse(
-                    scope, receive, send
-                ) as streams:
+
+            # Streamable HTTP transport — current MCP standard, used by
+            # Claude Code (`--transport http`) and Gemini CLI (`httpUrl`).
+            # Stateless mode avoids session affinity behind a reverse proxy.
+            session_manager = StreamableHTTPSessionManager(
+                app=mcp_server,
+                stateless=True,
+                json_response=False,
+            )
+
+            # Legacy SSE transport — still required by Home Assistant's MCP
+            # client integration (it does not yet speak streamable HTTP).
+            # The path passed to SseServerTransport is announced verbatim to
+            # the client as the message endpoint, so it must reflect the
+            # public URL when behind a prefix-stripping proxy.
+            sse = SseServerTransport(f"{base_path}/messages/")
+
+            async def handle_sse(scope: Scope, receive: Receive, send: Send):
+                async with sse.connect_sse(scope, receive, send) as streams:
                     await mcp_server.run(
-                        streams[0], 
+                        streams[0],
                         streams[1],
                         InitializationOptions(
                             server_name="paprika-mcp-python",
@@ -473,26 +526,64 @@ async def main():
                                 notification_options=NotificationOptions(),
                                 experimental_capabilities={},
                             ),
-                        )
+                        ),
                     )
 
-            async def handle_messages(scope, receive, send):
-                await sse.handle_post_message(scope, receive, send)
-            
-            app = Starlette(
-                debug=True,
-                routes=[
-                    Mount("/mcp/sse", app=handle_sse),
-                    Mount("/mcp/messages", app=handle_messages),
-                ],
+            async def dispatcher(scope: Scope, receive: Receive, send: Send):
+                """Route requests by exact path before Starlette's Mount layer
+                gets a chance to issue trailing-slash redirects on /mcp or
+                /sse, which would break MCP clients that POST without a
+                trailing slash."""
+                if scope["type"] == "lifespan":
+                    # Forwarded by Starlette to the lifespan handler below.
+                    return
+                path = scope.get("path", "")
+                if path in ("/mcp", "/mcp/"):
+                    await session_manager.handle_request(scope, receive, send)
+                    return
+                if path in ("/sse", "/sse/"):
+                    await handle_sse(scope, receive, send)
+                    return
+                await starlette_app(scope, receive, send)
+
+            @contextlib.asynccontextmanager
+            async def lifespan(app):
+                async with session_manager.run():
+                    yield
+
+            # Starlette app handles /messages/* (and optionally the
+            # base_path-prefixed variant) plus lifespan. Other paths are
+            # dispatched directly above.
+            routes = [
+                Mount("/messages/", app=sse.handle_post_message),
+            ]
+            if base_path:
+                # Also serve the prefixed path so that direct-LAN clients
+                # (like Home Assistant) which receive the announced endpoint
+                # "/paprika/messages/..." can POST to it on the bare port.
+                routes.append(
+                    Mount(f"{base_path}/messages/", app=sse.handle_post_message)
+                )
+            starlette_app = Starlette(
+                debug=False,
+                routes=routes,
+                lifespan=lifespan,
             )
-            
-            # Start Uvicorn
-            logger.info(f"Starting SSE Server on {host}:{port}")
+
+            async def app(scope, receive, send):
+                if scope["type"] == "lifespan":
+                    await starlette_app(scope, receive, send)
+                    return
+                await dispatcher(scope, receive, send)
+
+            logger.info(
+                f"Starting MCP HTTP server on {host}:{port} "
+                f"(base_path={base_path or '(none)'})"
+            )
             return app, host, port
 
         # Run the server (default stdio)
-        if not use_sse:
+        if not use_http:
             async with stdio_server() as (read_stream, write_stream):
                 await server.run(
                     read_stream,

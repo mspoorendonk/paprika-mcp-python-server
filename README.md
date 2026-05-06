@@ -3,11 +3,12 @@
 A Model Context Protocol (MCP) server that integrates Paprika Recipe Manager with agents, enabling natural language recipe management through AI conversation.
 
 Supported agents:
-- Claude desktop
+- Claude Desktop
+- Claude Code (CLI)
 - Home Assistant
 - Google Antigravity
 - Gemini CLI
-- VSCode github copilot
+- VS Code GitHub Copilot
 - Claude.ai (web)
 - Gemini (web)
 
@@ -105,45 +106,42 @@ Completely quit and restart Claude Desktop for the changes to take effect.
 
 ## LAN Deployment (Run as a Network Service)
 
-If you want the MCP server to be centrally accessible by multiple agents across your network (e.g., Home Assistant OS on one machine and Claude Desktop on another), you should run the server using Server-Sent Events (SSE).
+If you want the MCP server to be centrally accessible by multiple agents across your network (e.g., Home Assistant OS on one machine and Claude Code on another), run the server in HTTP mode. It exposes both:
 
-### 1. Start the Server in SSE Mode on Linux
+- **Streamable HTTP** at `/mcp` — the current MCP standard (Claude Code, Gemini CLI, VS Code Copilot)
+- **Server-Sent Events** at `/sse` (with messages POSTed to `/messages/`) — required by Home Assistant, which only supports SSE
+
+### 1. Start the Server in HTTP Mode on Linux
 
 Run the server on your dedicated Linux machine, binding to your LAN IP address:
 
 ```bash
 # Keep this running, e.g., using systemd or tmux
-python src/server.py --sse --host 0.0.0.0 --port 8000
+python src/server.py --http --host 0.0.0.0 --port 8000
+```
+
+If the server sits behind a reverse proxy that strips a path prefix from the public URL (for example, nginx forwarding `https://example.com/paprika/*` to the backend's `/*`), pass the public prefix with `--base-path` so the SSE transport announces the correct message endpoint to clients:
+
+```bash
+python src/server.py --http --host 0.0.0.0 --port 8000 --base-path /paprika
 ```
 
 ### 2. Configure Home Assistant (HAOS)
 
-On your separate Home Assistant instance, connect to the remote server by adding the SSE URL to your `configuration.yaml` (or configuring it via the HA MCP UI integration):
+Home Assistant's MCP integration (Settings → Devices & Services → Add Integration → "Model Context Protocol") only supports SSE. Point it at the `/sse` endpoint:
 
-```yaml
-mcp:
-  servers:
-    paprika:
-      type: sse
-      url: "http://<linux-machine-ip>:8000/mcp/sse" # Home Assistant supports local HTTP
-```
+- **SSE Server URL:** `http://<linux-machine-ip>:8000/sse`
 
-### 3. Configure Claude Desktop to use the Remote Server
+Over a public HTTPS reverse proxy with basic auth, embed the credentials in the URL: `https://user:pass@example.com/<prefix>/sse`.
 
-Claude Desktop requires a secure connection (`https://`). To achieve this, you need to expose your local server through an HTTPS reverse proxy (like Caddy, Nginx, Cloudflare Tunnels, or ngrok).
+### 3. Reverse-Proxy Notes
 
-Once you have your HTTPS URL, use a generic SSE-to-stdio bridge (requires Node.js/npx on the Claude machine) to connect:
+When fronting the server with nginx (or similar):
 
-```json
-{
-  "mcpServers": {
-    "paprika-remote": {
-      "command": "npx",
-      "args": ["-y", "@browserbasehq/mcp-sse-bridge", "https://<your-secure-domain>/mcp/sse"]
-    }
-  }
-}
-```
+- Strip the public prefix before forwarding (e.g. rewrite `^/paprika(/.*)$ $1`).
+- Run the backend with `--base-path /paprika` so SSE clients are told to POST messages to `/paprika/messages/...`.
+- Disable buffering for streaming: `proxy_buffering off; proxy_cache off; chunked_transfer_encoding off;` and a long `proxy_read_timeout`.
+- Set `proxy_http_version 1.1` and `proxy_set_header Connection '';`.
 
 ## Usage Examples
 
@@ -199,7 +197,7 @@ Remove choco from my grocery list.
 | `update_recipe` | Complete recipe update (all fields) |
 | `update_recipe_partial` | Update only specified fields |
 | `list_recipes` | List all recipes with ingredients and details |
-| `get_groceries` | List all grocery items currently on the Paprika grocery list |
+| `get_groceries` | List unchecked grocery items on the Paprika grocery list (set `include_purchased=true` to include checked items) |
 | `add_grocery_item` | Add a new item to the Paprika grocery list |
 | `remove_grocery_item` | Remove an item from the Paprika grocery list by name or ID |
 
@@ -268,6 +266,12 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Changelog
 
+### v1.1.0 (2026-05-06)
+- Added Streamable HTTP transport at `/mcp` (current MCP standard) for Claude Code, Gemini CLI, VS Code Copilot, Antigravity, and web clients
+- Kept legacy SSE transport at `/sse` (with messages at `/messages/`) for Home Assistant
+- Added `--http` flag (replaces `--sse`, which still works as an alias) and `--base-path` for reverse-proxy prefix support
+- Updated agent configuration examples for all supported clients
+
 ### v1.0.0 (2025-09-27)
 - Initial release
 - Recipe creation, updating, and listing functionality
@@ -276,9 +280,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ---
 
 **Note**: This is an unofficial integration and is not affiliated with or endorsed by Paprika Recipe Manager or Anthropic.
-### Configure VSCode GitHub Copilot
+### Configure VS Code GitHub Copilot
 
-Add the MCP server to your VS Code settings (`settings.json`):
+Add the MCP server to your VS Code `settings.json`:
 
 ```json
 {
@@ -287,21 +291,41 @@ Add the MCP server to your VS Code settings (`settings.json`):
       "command": "/path/to/paprika-mcp-python-server/.venv/bin/paprika-mcp-python-server"
     },
     "paprika-remote": {
-      "url": "https://mcp.spoorendonk.com/paprika/mcp/sse/"
+      "url": "https://<your-domain>/<prefix>/mcp"
     }
   }
 }
 ```
 
+### Configure Claude Code (CLI)
+
+Use the streamable HTTP transport. If your endpoint is behind HTTP basic auth, pass the `Authorization` header:
+
+```bash
+claude mcp add --transport http paprika https://<your-domain>/paprika/mcp \
+  --header "Authorization: Basic $(printf '%s:%s' "$USER" "$PASS" | base64)"
+```
+
+For a local stdio install: `claude mcp add paprika -- /path/to/paprika-mcp-python-server/.venv/bin/paprika-mcp-python-server`.
+
+you can put your credentials in an .env file or set them in an envvar or supply them on the commandline.
+```cli
+source .env
+claude mcp remove paprika
+AUTH=$(printf '%s:%s' "$MCPUSER_USERNAME" "$MCPUSER_PASSWORD" | base64 -w0)
+claude mcp add --transport http --scope user paprika https://your.mcp.server/paprika/mcp --header "Authorization: Basic $AUTH"
+claude mcp list
+```
+
 ### Configure Google Antigravity
 
-For Google Antigravity, you can use the built-in MCP connection configuration to point to the SSE URL:
+Use the built-in MCP connection configuration with the streamable HTTP URL:
 
 ```json
 {
   "mcpServers": {
     "paprika": {
-      "url": "https://mcp.spoorendonk.com/paprika/mcp/sse/"
+      "httpUrl": "https://<your-domain>/<prefix>/mcp"
     }
   }
 }
@@ -309,18 +333,30 @@ For Google Antigravity, you can use the built-in MCP connection configuration to
 
 ### Configure Gemini CLI
 
-If using Gemini CLI or similar tools that support standard MCP JSON configurations:
+Gemini CLI's `settings.json` distinguishes streamable HTTP (`httpUrl`) from SSE (`url`):
 
 ```json
 {
   "mcpServers": {
-    "paprika": {
+    "paprika-local": {
       "command": "/path/to/paprika-mcp-python-server/.venv/bin/paprika-mcp-python-server"
+    },
+    "paprika-remote": {
+      "httpUrl": "https://<your-domain>/paprika/mcp",
+      "headers": {
+        "Authorization": "Basic <base64(user:pass)>"
+      }
     }
   }
 }
 ```
 
+or from the CLI: 
+```cli
+gemini mcp add --transport http --scope user paprika https://mcp.spoorendonk.com/paprika/mcp --header "Authorization: Basic $AUTH"
+```
+
+
 ### Web Clients (Claude.ai & Gemini Web)
 
-For cloud / web clients to interact with your local Paprika deployment, they must be given your public HTTPS URL (`https://mcp.spoorendonk.com/paprika/mcp/sse/`) and your credentials (e.g., via Basic Auth) according to their respective custom prompt/tool extension workflows.
+For cloud / web clients to interact with your local Paprika deployment, give them your public HTTPS streamable HTTP URL (`https://<your-domain>/<prefix>/mcp`) and your credentials (e.g., via Basic Auth) according to their respective custom-connector workflows.
