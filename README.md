@@ -199,7 +199,7 @@ Remove choco from my grocery list.
 | `list_recipes` | List all recipes with ingredients and details |
 | `get_groceries` | List unchecked grocery items on the Paprika grocery list (set `include_purchased=true` to include checked items) |
 | `add_grocery_item` | Add a new item to the Paprika grocery list |
-| `remove_grocery_item` | Remove an item from the Paprika grocery list by name or ID |
+| `remove_grocery_item` | Remove an item from Paprika groceries. Searches all lists by default; strict matching (exact UID, exact name, or unambiguous substring). Returns the removed item's name, UID, and list UID. Ambiguous matches return an error listing candidates. |
 
 ### Components
 

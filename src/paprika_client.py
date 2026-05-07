@@ -18,6 +18,14 @@ class PaprikaAPIError(Exception):
     pass
 
 
+class AmbiguousMatchError(PaprikaAPIError):
+    """Raised when multiple grocery items match a query and disambiguation is needed."""
+
+    def __init__(self, message: str, candidates: List[Dict[str, Any]]):
+        super().__init__(message)
+        self.candidates = candidates
+
+
 class PaprikaClient:
     """Client for interacting with the Paprika Recipe Manager API."""
 
@@ -540,6 +548,79 @@ class PaprikaClient:
             
         return self._generate_uuid().lower()
 
+    async def _resolve_list_uid_strict(self, list_query: str) -> str:
+        """Resolve a target list UID strictly. Raises if not found."""
+        lists = await self.get_grocery_lists()
+        matched_list = self._resolve_fuzzy(list_query, lists)
+        if matched_list:
+            return matched_list["uid"]
+        raise PaprikaAPIError(f"List '{list_query}' not found")
+
+    def _resolve_strict(self, query: str, items: List[Dict[str, Any]], name_key: str = "name", id_key: str = "uid") -> Dict[str, Any]:
+        """
+        Resolve a query to an item using strict matching only (safe for destructive ops).
+        
+        Matching order: exact UID → case-insensitive exact name → unambiguous substring.
+        Raises AmbiguousMatchError if multiple items match.
+        Raises PaprikaAPIError if no items match.
+        """
+        if not query or not items:
+            raise PaprikaAPIError(f"Grocery '{query}' not found.")
+
+        # 1. Exact ID match
+        for item in items:
+            if item.get(id_key) == query:
+                return item
+
+        # 2. Exact name match (case insensitive)
+        query_lower = query.lower()
+        exact_matches = [item for item in items if item.get(name_key, "").lower() == query_lower]
+        if len(exact_matches) == 1:
+            return exact_matches[0]
+        if len(exact_matches) > 1:
+            msg = f"Multiple items match '{query}'. Please specify by UID:\n"
+            for item in exact_matches:
+                msg += f"- {item.get(name_key)} (UID {item.get(id_key)}) on list {item.get('list_uid', 'unknown')}\n"
+            raise AmbiguousMatchError(msg, exact_matches)
+
+        # 3. Substring match (query must be at least 3 chars)
+        substring_matches = []
+        if len(query_lower) >= 3:
+            for item in items:
+                name_lower = item.get(name_key, "").lower()
+                if query_lower in name_lower or name_lower in query_lower:
+                    substring_matches.append(item)
+
+        if len(substring_matches) == 1:
+            return substring_matches[0]
+        if len(substring_matches) > 1:
+            msg = f"Multiple items match '{query}'. Please specify by UID:\n"
+            for item in substring_matches:
+                msg += f"- {item.get(name_key)} (UID {item.get(id_key)}) on list {item.get('list_uid', 'unknown')}\n"
+            raise AmbiguousMatchError(msg, substring_matches)
+
+        raise PaprikaAPIError(f"Grocery '{query}' not found.")
+
+    async def _resolve_list_uid(self, list_query: Optional[str]) -> str:
+        """Resolve a target list UID by name or ID. Falls back to default list."""
+        lists = await self.get_grocery_lists()
+        
+        if list_query:
+            matched_list = self._resolve_fuzzy(list_query, lists)
+            if matched_list:
+                return matched_list["uid"]
+                
+        # Fall back to default list
+        for lst in lists:
+            if lst.get("is_default"):
+                return lst["uid"]
+                
+        # Fall back to first list if no default is found
+        if lists:
+            return lists[0]["uid"]
+            
+        return self._generate_uuid().lower()
+
     async def get_groceries(
         self, include_purchased: bool = False
     ) -> List[Dict[str, Any]]:
@@ -628,43 +709,53 @@ class PaprikaClient:
             logger.error(f"Failed to create grocery {name}: {str(e)}")
             raise PaprikaAPIError(f"Failed to create grocery: {str(e)}")
 
-    async def remove_grocery_item(self, item_name_or_id: str, list_name_or_id: Optional[str] = None) -> None:
+    async def remove_grocery_item(self, item_name_or_id: str, list_name_or_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Remove a grocery item from Paprika by marking it as deleted.
 
+        Searches across all grocery lists by default. If list_name_or_id is
+        provided, confines the search to that list only.
+
+        Uses strict matching (exact UID, exact name, or unambiguous substring)
+        to prevent accidental deletion of the wrong item.
+
         Args:
             item_name_or_id: The ID or name of the grocery item to remove
-            list_name_or_id: Target list via Name or UID. If provided, confines search space.
+            list_name_or_id: Name or UID of list to confine search. If omitted, searches all lists.
+
+        Returns:
+            The removed item dict (uid, name, list_uid)
 
         Raises:
-            PaprikaAPIError: If deletion fails
+            PaprikaAPIError: If item not found, list not found, or deletion fails
+            AmbiguousMatchError: If multiple items match the query
         """
-        # To ensure we only send deleted=True and the original item data, we need to fetch it first
         try:
             # Search the full list including already-purchased items, since
             # callers may legitimately want to remove a checked item too.
             groceries = await self.get_groceries(include_purchased=True)
 
-            # If list provided, filter groceries; else only look in the default list
-            target_list_uid = await self._resolve_list_uid(list_name_or_id)
-            if target_list_uid:
+            # Only filter by list when explicitly provided
+            if list_name_or_id:
+                target_list_uid = await self._resolve_list_uid_strict(list_name_or_id)
                 groceries = [g for g in groceries if g.get("list_uid") == target_list_uid]
-                
-            item = self._resolve_fuzzy(item_name_or_id, groceries, name_key="name", id_key="uid")
-            
-            if not item:
-                raise PaprikaAPIError(f"Grocery '{item_name_or_id}' not found in the target list.")
-                
+
+            item = self._resolve_strict(item_name_or_id, groceries, name_key="name", id_key="uid")
+
             item["deleted"] = True
             deleted_uid = item["uid"]
-            
+
             gzipped_data = self._gzip_json([item])
             data = aiohttp.FormData()
             data.add_field("data", gzipped_data, content_type="application/octet-stream", filename="data.gz")
-            
+
             await self._make_authenticated_request("POST", "/sync/groceries", data=data)
             logger.info(f"Successfully deleted grocery: {deleted_uid}")
-            
+
+            return {"uid": item["uid"], "name": item["name"], "list_uid": item.get("list_uid", "unknown")}
+
+        except (PaprikaAPIError, AmbiguousMatchError):
+            raise
         except Exception as e:
             logger.error(f"Failed to delete grocery {item_name_or_id}: {str(e)}")
             raise PaprikaAPIError(f"Failed to delete grocery: {str(e)}")

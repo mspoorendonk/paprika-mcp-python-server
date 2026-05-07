@@ -8,7 +8,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from config import get_config
-from paprika_client import PaprikaClient
+from paprika_client import PaprikaClient, AmbiguousMatchError
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -270,17 +270,17 @@ async def main():
                 ),
                 Tool(
                     name="remove_grocery_item",
-                    description="Remove a grocery item from Paprika using its name (robust fuzzy) or UID",
+                    description="Remove a grocery item from Paprika. Searches across all the user's grocery lists by default. Pass `list_name_or_id` to confine the search. The matcher is conservative for safety: it requires an exact UID, case-insensitive exact name, or unambiguous substring match. If multiple items match, the call returns an error listing candidates so you can disambiguate by UID.",
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "item_name_or_id": {
                                 "type": "string",
-                                "description": "The UID or Name of the grocery item to remove (supports substring and fuzzy matching)",
+                                "description": "The UID or name of the grocery item to remove (exact UID, exact name, or unambiguous substring)",
                             },
                             "list_name_or_id": {
                                 "type": "string",
-                                "description": "Name or ID of the list to remove from (restricts search space)",
+                                "description": "Name or ID of the list to confine the search to (searches all lists if omitted)",
                             }
                         },
                         "required": ["item_name_or_id"],
@@ -438,14 +438,14 @@ async def main():
                     ]
 
                 elif name == "remove_grocery_item":
-                    await paprika_client.remove_grocery_item(
+                    removed = await paprika_client.remove_grocery_item(
                         item_name_or_id=arguments["item_name_or_id"],
                         list_name_or_id=arguments.get("list_name_or_id")
                     )
                     return [
                         TextContent(
                             type="text",
-                            text=f"Successfully removed grocery item matching: {arguments['item_name_or_id']}",
+                            text=f"Removed '{removed['name']}' (UID {removed['uid']}) from list {removed['list_uid']}.",
                         )
                     ]
 

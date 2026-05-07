@@ -2,7 +2,7 @@
 venv/
 env/
 .venv/
-
+tmp/
 # Python
 __pycache__/
 *.py[cod]
@@ -51,3 +51,4 @@ logs/
 .coverage
 .pytest_cache/
 htmlcov/
+.gemini/settings.json
