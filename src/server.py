@@ -516,16 +516,10 @@ async def main():
                 )
 
         # Parse HTTP arguments safely
-        import os
         import sys
-        use_http = "--http" in sys.argv or "--sse" in sys.argv
+        use_http = "--http" in sys.argv
         host = "0.0.0.0"
         port = 8000
-        # Optional public URL prefix for clients reaching us through a reverse
-        # proxy that strips a path prefix (e.g. nginx forwarding /paprika/* ->
-        # /*). The SSE transport announces an absolute path for its message
-        # back-channel, so it must include the public prefix.
-        base_path = os.environ.get("MCP_BASE_PATH", "")
 
         for i, arg in enumerate(sys.argv):
             if arg == "--host" and i + 1 < len(sys.argv):
@@ -535,73 +529,27 @@ async def main():
                     port = int(sys.argv[i + 1])
                 except ValueError:
                     pass
-            elif arg == "--base-path" and i + 1 < len(sys.argv):
-                base_path = sys.argv[i + 1]
-
-        if base_path and not base_path.startswith("/"):
-            base_path = "/" + base_path
-        base_path = base_path.rstrip("/")
 
         if use_http:
             import contextlib
 
-            from mcp.server.sse import SseServerTransport
             from mcp.server.streamable_http_manager import (
                 StreamableHTTPSessionManager,
             )
             from starlette.applications import Starlette
-            from starlette.routing import Mount
             from starlette.types import Receive, Scope, Send
 
             mcp_server = server
 
-            # Streamable HTTP transport — current MCP standard, used by
-            # Claude Code (`--transport http`) and Gemini CLI (`httpUrl`).
-            # Stateless mode avoids session affinity behind a reverse proxy.
+            # Streamable HTTP transport — the current MCP standard. A single
+            # `/mcp` endpoint handles both POST (JSON-RPC) and GET (optional
+            # SSE stream). Stateless mode avoids session affinity behind a
+            # reverse proxy.
             session_manager = StreamableHTTPSessionManager(
                 app=mcp_server,
                 stateless=True,
                 json_response=False,
             )
-
-            # Legacy SSE transport — still required by Home Assistant's MCP
-            # client integration (it does not yet speak streamable HTTP).
-            # The path passed to SseServerTransport is announced verbatim to
-            # the client as the message endpoint, so it must reflect the
-            # public URL when behind a prefix-stripping proxy.
-            sse = SseServerTransport(f"{base_path}/messages/")
-
-            async def handle_sse(scope: Scope, receive: Receive, send: Send):
-                async with sse.connect_sse(scope, receive, send) as streams:
-                    await mcp_server.run(
-                        streams[0],
-                        streams[1],
-                        InitializationOptions(
-                            server_name="paprika-mcp-python",
-                            server_version="1.0.0",
-                            capabilities=mcp_server.get_capabilities(
-                                notification_options=NotificationOptions(),
-                                experimental_capabilities={},
-                            ),
-                        ),
-                    )
-
-            async def dispatcher(scope: Scope, receive: Receive, send: Send):
-                """Route requests by exact path before Starlette's Mount layer
-                gets a chance to issue trailing-slash redirects on /mcp or
-                /sse, which would break MCP clients that POST without a
-                trailing slash."""
-                if scope["type"] == "lifespan":
-                    # Forwarded by Starlette to the lifespan handler below.
-                    return
-                path = scope.get("path", "")
-                if path in ("/mcp", "/mcp/"):
-                    await session_manager.handle_request(scope, receive, send)
-                    return
-                if path in ("/sse", "/sse/"):
-                    await handle_sse(scope, receive, send)
-                    return
-                await starlette_app(scope, receive, send)
 
             @contextlib.asynccontextmanager
             async def lifespan(app):
@@ -619,35 +567,30 @@ async def main():
                     except (asyncio.CancelledError, Exception):
                         pass
 
-            # Starlette app handles /messages/* (and optionally the
-            # base_path-prefixed variant) plus lifespan. Other paths are
-            # dispatched directly above.
-            routes = [
-                Mount("/messages/", app=sse.handle_post_message),
-            ]
-            if base_path:
-                # Also serve the prefixed path so that direct-LAN clients
-                # (like Home Assistant) which receive the announced endpoint
-                # "/paprika/messages/..." can POST to it on the bare port.
-                routes.append(
-                    Mount(f"{base_path}/messages/", app=sse.handle_post_message)
-                )
-            starlette_app = Starlette(
-                debug=False,
-                routes=routes,
-                lifespan=lifespan,
-            )
+            # Starlette handles the ASGI lifespan protocol (which drives
+            # session_manager.run()). It has no routes — /mcp is dispatched
+            # directly below to avoid Mount's trailing-slash redirects, which
+            # break clients that POST without a trailing slash.
+            starlette_app = Starlette(debug=False, lifespan=lifespan)
 
-            async def app(scope, receive, send):
+            async def app(scope: Scope, receive: Receive, send: Send):
                 if scope["type"] == "lifespan":
                     await starlette_app(scope, receive, send)
                     return
-                await dispatcher(scope, receive, send)
 
-            logger.info(
-                f"Starting MCP HTTP server on {host}:{port} "
-                f"(base_path={base_path or '(none)'})"
-            )
+                path = scope.get("path", "")
+                if path in ("/mcp", "/mcp/"):
+                    await session_manager.handle_request(scope, receive, send)
+                    return
+
+                await send({
+                    "type": "http.response.start",
+                    "status": 404,
+                    "headers": [(b"content-type", b"text/plain; charset=utf-8")],
+                })
+                await send({"type": "http.response.body", "body": b"Not Found"})
+
+            logger.info(f"Starting MCP HTTP server on {host}:{port} (/mcp)")
             return app, host, port
 
         # Run the server (default stdio)

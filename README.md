@@ -106,10 +106,7 @@ Completely quit and restart Claude Desktop for the changes to take effect.
 
 ## LAN Deployment (Run as a Network Service)
 
-If you want the MCP server to be centrally accessible by multiple agents across your network (e.g., Home Assistant OS on one machine and Claude Code on another), run the server in HTTP mode. It exposes both:
-
-- **Streamable HTTP** at `/mcp` — the current MCP standard (Claude Code, Gemini CLI, VS Code Copilot)
-- **Server-Sent Events** at `/sse` (with messages POSTed to `/messages/`) — required by Home Assistant, which only supports SSE
+If you want the MCP server to be centrally accessible by multiple agents across your network (e.g., Home Assistant OS on one machine and Claude Code on another), run the server in HTTP mode. It exposes a single Streamable HTTP endpoint at `/mcp` — the current MCP standard, used by all supported clients (Claude Desktop, Claude Code, Home Assistant, Gemini CLI, VS Code Copilot, Antigravity, Claude.ai web, Gemini web).
 
 ### 1. Start the Server in HTTP Mode on Linux
 
@@ -120,26 +117,19 @@ Run the server on your dedicated Linux machine, binding to your LAN IP address:
 python src/server.py --http --host 0.0.0.0 --port 8000
 ```
 
-If the server sits behind a reverse proxy that strips a path prefix from the public URL (for example, nginx forwarding `https://example.com/paprika/*` to the backend's `/*`), pass the public prefix with `--base-path` so the SSE transport announces the correct message endpoint to clients:
-
-```bash
-python src/server.py --http --host 0.0.0.0 --port 8000 --base-path /paprika
-```
-
 ### 2. Configure Home Assistant (HAOS)
 
-Home Assistant's MCP integration (Settings → Devices & Services → Add Integration → "Model Context Protocol") only supports SSE. Point it at the `/sse` endpoint:
+In Home Assistant: **Settings → Devices & Services → Add Integration → "Model Context Protocol"**. Point it at the `/mcp` endpoint:
 
-- **SSE Server URL:** `http://<linux-machine-ip>:8000/sse`
+- **Server URL:** `http://<linux-machine-ip>:8000/mcp`
 
-Over a public HTTPS reverse proxy with basic auth, embed the credentials in the URL: `https://user:pass@example.com/<prefix>/sse`.
+Over a public HTTPS reverse proxy with basic auth, embed the credentials in the URL: `https://user:pass@example.com/<prefix>/mcp`.
 
 ### 3. Reverse-Proxy Notes
 
 When fronting the server with nginx (or similar):
 
 - Strip the public prefix before forwarding (e.g. rewrite `^/paprika(/.*)$ $1`).
-- Run the backend with `--base-path /paprika` so SSE clients are told to POST messages to `/paprika/messages/...`.
 - Disable buffering for streaming: `proxy_buffering off; proxy_cache off; chunked_transfer_encoding off;` and a long `proxy_read_timeout`.
 - Set `proxy_http_version 1.1` and `proxy_set_header Connection '';`.
 
@@ -299,10 +289,13 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Changelog
 
+### v1.2.0 (2026-05-08)
+- Voice-friendly error contract: typed exception hierarchy with stable `structuredContent.code` values (`paprika_unreachable`, `paprika_auth_failed`, `paprika_rate_limited`, `grocery_not_found`, `grocery_ambiguous`, `grocery_list_not_found`, `recipe_not_found`, `invalid_argument`, `paprika_error`) and TTS-friendly user-visible messages. See `specs.md` Scenario 9.
+- Lazy authentication: a startup auth blip no longer kills the server; it surfaces as a friendly error on the first tool call.
+- Removed legacy SSE transport. All clients (including Home Assistant) now connect to the single Streamable HTTP `/mcp` endpoint.
+
 ### v1.1.0 (2026-05-06)
 - Added Streamable HTTP transport at `/mcp` (current MCP standard) for Claude Code, Gemini CLI, VS Code Copilot, Antigravity, and web clients
-- Kept legacy SSE transport at `/sse` (with messages at `/messages/`) for Home Assistant
-- Added `--http` flag (replaces `--sse`, which still works as an alias) and `--base-path` for reverse-proxy prefix support
 - Updated agent configuration examples for all supported clients
 
 ### v1.0.0 (2025-09-27)
