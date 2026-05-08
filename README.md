@@ -133,6 +133,30 @@ When fronting the server with nginx (or similar):
 - Disable buffering for streaming: `proxy_buffering off; proxy_cache off; chunked_transfer_encoding off;` and a long `proxy_read_timeout`.
 - Set `proxy_http_version 1.1` and `proxy_set_header Connection '';`.
 
+### 4. Per-client Basic-Auth users (recommended)
+
+Give every client install its own Basic-Auth user instead of sharing one
+`mcpuser`. Selective revocation, per-client audit logs (`$remote_user` in
+nginx), and easy offboarding. Use `scripts/add-mcp-client.sh`:
+
+```bash
+# Tell the script where the htpasswd lives and what your public URL is:
+export HTPASSWD_FILE=/opt/stack/nginx/.htpasswd_mcp   # default
+export MCP_URL=https://<your-domain>/paprika/mcp
+
+scripts/add-mcp-client.sh claude-code laptop          # → user "claude-code-laptop"
+scripts/add-mcp-client.sh homeassistant haos          # → user "homeassistant-haos"
+scripts/add-mcp-client.sh claude-web                  # web clients have no machine
+```
+
+The script generates a 40-char URL-safe password, adds a bcrypt entry to the
+htpasswd file, and writes a copy-pasteable connection snippet for the chosen
+tool to `tmp/credentials/<user>.txt` (gitignored, mode 600). Recognised
+tools: `claude-code`, `claude-desktop`, `gemini-cli`, `vscode-copilot`,
+`antigravity`, `homeassistant`, `claude-web`, `gemini-web`.
+
+To revoke one client: `sudo htpasswd -D $HTPASSWD_FILE <user>`.
+
 ## Usage Examples
 
 Once configured, you can interact with your Paprika recipes through natural language in Claude:
@@ -334,14 +358,9 @@ claude mcp add --transport http paprika https://<your-domain>/paprika/mcp \
 
 For a local stdio install: `claude mcp add paprika -- /path/to/paprika-mcp-python-server/.venv/bin/paprika-mcp-python-server`.
 
-you can put your credentials in an .env file or set them in an envvar or supply them on the commandline.
-```cli
-source .env
-claude mcp remove paprika
-AUTH=$(printf '%s:%s' "$MCPUSER_USERNAME" "$MCPUSER_PASSWORD" | base64 -w0)
-claude mcp add --transport http --scope user paprika https://your.mcp.server/paprika/mcp --header "Authorization: Basic $AUTH"
-claude mcp list
-```
+If you've provisioned a per-client user (see `scripts/add-mcp-client.sh`), the
+generated `tmp/credentials/<user>.txt` already contains the exact `claude mcp
+add` command — just paste it.
 
 ### Configure Google Antigravity
 
@@ -379,7 +398,7 @@ Gemini CLI's `settings.json` distinguishes streamable HTTP (`httpUrl`) from SSE 
 
 or from the CLI: 
 ```cli
-gemini mcp add --transport http --scope user paprika https://mcp.spoorendonk.com/paprika/mcp --header "Authorization: Basic $AUTH"
+gemini mcp add --transport http --scope user paprika https://<your-domain>/paprika/mcp --header "Authorization: Basic $AUTH"
 ```
 
 
